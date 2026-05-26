@@ -20,6 +20,8 @@ def iter_unprocessed(root: Path) -> Iterator[Path]:
             continue
         if p.name.startswith(DONE_PREFIX):
             continue
+        if p.name.startswith("."):  # hidden/temp files (e.g., .tmp_*.jpg from a crashed EXIF write)
+            continue
         candidates.append(p)
     candidates.sort(key=lambda p: (str(p.parent), p.name))
     yield from candidates

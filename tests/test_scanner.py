@@ -19,6 +19,7 @@ def test_iter_unprocessed_sorted_skips_done_and_unsupported(tmp_path, make_jpeg)
     # These must be skipped:
     make_jpeg(tmp_path / "a" / "_done_old.jpg")
     (tmp_path / "a" / "readme.txt").write_text("ignore me")
+    make_jpeg(tmp_path / "a" / ".tmp_crashed.jpg")  # leftover from a crashed EXIF write
 
     result = list(iter_unprocessed(tmp_path))
 
