@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
         self._current: PhotoBundle | None = None
         self._ready_queue: "deque[PhotoBundle]" = deque()
         self._pixmap_cache: dict[Path, QPixmap] = {}
+        self._current_snapshot: tuple | None = None
 
         # Widgets
         self._main_thumb = QLabel()
@@ -155,7 +156,8 @@ class MainWindow(QMainWindow):
             default_for_editor=default,
         )
 
-        # Similar grid
+        # Similar grid — snapshot the index once per photo (slider drag re-uses it)
+        self._current_snapshot = self._index.snapshot()
         self._refresh_similar(bundle, threshold=self._similar_grid.threshold)
 
         # Duplicate strip
@@ -175,7 +177,9 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_similar(self, bundle: PhotoBundle, threshold: float) -> None:
-        matrix, _shas, paths = self._index.snapshot()
+        if self._current_snapshot is None:
+            return
+        matrix, _shas, paths = self._current_snapshot
         matches = find_similar(
             bundle.embedding, matrix, paths, threshold=threshold, k=SIM_TOP_K
         )
@@ -263,6 +267,7 @@ class MainWindow(QMainWindow):
     def _advance(self) -> None:
         self._processed_count += 1
         self._current = None
+        self._current_snapshot = None
         # Show next from queue if ready; else wait for worker signal.
         if self._ready_queue:
             self._present(self._ready_queue.popleft())
