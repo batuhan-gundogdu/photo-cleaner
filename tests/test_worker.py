@@ -59,5 +59,5 @@ def test_worker_emits_photo_ready(qtbot, tmp_path, make_jpeg):
     assert bundle.embedding.shape == (512,)
     assert bundle.duplicate is None  # different stub embedding from seed
     assert isinstance(bundle.similar, list)
-    assert bundle.thumbnail_main is not None
+    assert bundle.thumbnail_main_png and isinstance(bundle.thumbnail_main_png, bytes)
     assert bundle.sha256 and len(bundle.sha256) == 64

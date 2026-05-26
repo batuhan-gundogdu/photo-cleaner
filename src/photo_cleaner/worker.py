@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from queue import Empty, Queue
 
@@ -16,7 +17,7 @@ from photo_cleaner.date_extractor import DateInfo, extract
 from photo_cleaner.duplicate_finder import Match, find_duplicate, find_similar
 from photo_cleaner.embedder import Embedder
 from photo_cleaner.index import Index
-from photo_cleaner.thumbnailer import to_qpixmap
+from photo_cleaner.thumbnailer import to_pil_thumbnail
 
 pillow_heif.register_heif_opener()
 
@@ -27,7 +28,7 @@ class PhotoBundle:
     date_info: DateInfo
     sha256: str
     embedding: "np.ndarray"  # noqa: F821 — kept loose to avoid import cycle
-    thumbnail_main: object  # QPixmap
+    thumbnail_main_png: bytes  # PNG-encoded bytes, GUI thread will turn into QPixmap
     duplicate: Match | None
     similar: list[Match]
 
@@ -70,7 +71,9 @@ class Worker(QThread):
         with Image.open(path) as im:
             im.load()
             embedding = self._embedder.embed(im.convert("RGB"))
-            thumb = to_qpixmap(im.convert("RGB"), THUMB_MAIN)
+            buf = BytesIO()
+            to_pil_thumbnail(im.convert("RGB"), THUMB_MAIN).save(buf, format="PNG")
+            thumb_png = buf.getvalue()
         matrix, shas, paths = self._index.snapshot()
         dup = find_duplicate(embedding, sha, matrix, shas, paths)
         sim = find_similar(embedding, matrix, paths, threshold=threshold, k=SIM_TOP_K)
@@ -81,7 +84,7 @@ class Worker(QThread):
             date_info=date_info,
             sha256=sha,
             embedding=embedding,
-            thumbnail_main=thumb,
+            thumbnail_main_png=thumb_png,
             duplicate=dup,
             similar=sim,
         )

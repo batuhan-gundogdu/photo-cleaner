@@ -128,9 +128,11 @@ class MainWindow(QMainWindow):
 
     def _present(self, bundle: PhotoBundle) -> None:
         self._current = bundle
-        # Main thumb
+        # Main thumb — decode PNG bytes on the GUI thread
+        pix = QPixmap()
+        pix.loadFromData(bundle.thumbnail_main_png, "PNG")
         self._main_thumb.setPixmap(
-            bundle.thumbnail_main.scaled(
+            pix.scaled(
                 self._main_thumb.width(),
                 self._main_thumb.height(),
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -161,7 +163,7 @@ class MainWindow(QMainWindow):
             match_pix = self._get_thumb_for_indexed(bundle.duplicate.path)
             self._dup_strip.show_pair(
                 similarity=bundle.duplicate.similarity,
-                new_pix=bundle.thumbnail_main,
+                new_pix=pix,
                 match_pix=match_pix,
                 match_name=bundle.duplicate.path.name,
             )
