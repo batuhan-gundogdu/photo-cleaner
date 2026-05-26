@@ -6,28 +6,33 @@ from pathlib import Path
 
 from photo_cleaner.config import DONE_PREFIX
 from photo_cleaner.index import Index
-from photo_cleaner.scanner import iter_unprocessed
 
 
 def fix_up_pending_renames(root: Path, index: Index) -> list[Path]:
-    """Walk ``root`` for unprocessed files; for each, if a DB row exists with
-    a matching SHA256, perform the missing rename. Returns the list of
-    intended (post-rename) paths that were healed.
+    """Heal photos whose DB row was inserted but rename never happened.
+
+    Iterates DB rows (small) rather than the full library: for each row whose
+    intended path starts with ``DONE_PREFIX``, check if the un-prefixed sibling
+    exists on disk and the prefixed target does not. If so, verify SHA256
+    matches the row, then perform the missing rename. Skipping the library walk
+    keeps startup fast on big libraries (e.g. 8k+ Google Drive photos).
     """
+    del root  # kept for API stability; new algorithm doesn't need it
+    _matrix, shas, paths = index.snapshot()
+    if not paths:
+        return []
     healed: list[Path] = []
-    for p in iter_unprocessed(root):
-        sha = _sha256_of_file(p)
-        rec = index.find_by_sha256(sha)
-        if rec is None:
+    for db_path, db_sha in zip(paths, shas):
+        if not db_path.name.startswith(DONE_PREFIX):
             continue
-        intended = p.parent / f"{DONE_PREFIX}{p.name}"
-        if rec.path != intended:
-            # The DB has a row for this content but at a different intended
-            # path (e.g., file moved between runs). Best to leave it alone
-            # and let the user reprocess.
+        unprefixed = db_path.parent / db_path.name[len(DONE_PREFIX):]
+        if not unprefixed.exists() or db_path.exists():
             continue
-        p.rename(intended)
-        healed.append(intended)
+        if _sha256_of_file(unprefixed) != db_sha:
+            # Different content under the un-prefixed name — leave it alone.
+            continue
+        unprefixed.rename(db_path)
+        healed.append(db_path)
     return healed
 
 
