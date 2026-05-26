@@ -22,9 +22,7 @@ from PyQt6.QtWidgets import (
 
 from photo_cleaner.config import (
     DONE_PREFIX,
-    DUP_THRESHOLD,
     PICTURES_ROOT,
-    SIM_THRESHOLD_DEFAULT,
     SIM_TOP_K,
     THUMB_GRID,
     THUMB_MAIN,
@@ -140,7 +138,7 @@ class MainWindow(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
-        rel = bundle.path.relative_to(self._root) if bundle.path.is_relative_to(self._root) else bundle.path
+        rel = bundle.path.relative_to(self._root) if bundle.path.is_relative_to(self._root) else bundle.path.name
         self._filename_label.setText(str(rel))
 
         # Date panel: pre-fill with last_edited_date if present, else detected
