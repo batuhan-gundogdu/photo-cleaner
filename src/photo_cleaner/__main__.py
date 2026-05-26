@@ -24,6 +24,7 @@ def main() -> int:
         return 1
     try:
         embedder = Embedder()
+        embedder._ensure_loaded()
     except Exception as exc:
         QMessageBox.critical(
             None,
