@@ -274,6 +274,11 @@ class MainWindow(QMainWindow):
         # Pre-fetch the photo after that.
         self._enqueue_next()
 
+    # ----- public API -----
+
+    def show_toast(self, message: str) -> None:
+        self._toast.show_message(message)
+
     # ----- lifecycle -----
 
     def closeEvent(self, event) -> None:

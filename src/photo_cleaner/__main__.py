@@ -37,7 +37,7 @@ def main() -> int:
     healed = fix_up_pending_renames(PICTURES_ROOT, index)
     win = MainWindow(index=index, embedder=embedder)
     if healed:
-        win._toast.show_message(f"Healed {len(healed)} pending rename(s) from a prior crash.")
+        win.show_toast(f"Healed {len(healed)} pending rename(s) from a prior crash.")
     win.show()
     return app.exec()
 
