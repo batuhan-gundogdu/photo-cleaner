@@ -1,0 +1,276 @@
+"""Main window: assembles widgets, drives the processing loop."""
+from __future__ import annotations
+
+from collections import deque
+from datetime import datetime
+from pathlib import Path
+from typing import Iterator
+
+import numpy as np
+import send2trash
+from PIL import Image
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap
+from PyQt6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QStatusBar,
+    QVBoxLayout,
+    QWidget,
+)
+
+from photo_cleaner.config import (
+    DONE_PREFIX,
+    DUP_THRESHOLD,
+    PICTURES_ROOT,
+    SIM_THRESHOLD_DEFAULT,
+    SIM_TOP_K,
+    THUMB_GRID,
+    THUMB_MAIN,
+)
+from photo_cleaner.date_writer import write as write_date
+from photo_cleaner.duplicate_finder import find_similar
+from photo_cleaner.embedder import Embedder
+from photo_cleaner.index import Index, PhotoRecord
+from photo_cleaner.scanner import iter_unprocessed
+from photo_cleaner.thumbnailer import to_qpixmap
+from photo_cleaner.ui.date_panel import DatePanel
+from photo_cleaner.ui.duplicate_strip import DuplicateStrip
+from photo_cleaner.ui.similar_grid import SimilarGrid
+from photo_cleaner.ui.toast import Toast
+from photo_cleaner.worker import PhotoBundle, Worker
+
+
+class MainWindow(QMainWindow):
+    def __init__(
+        self,
+        index: Index,
+        embedder: Embedder,
+        root: Path = PICTURES_ROOT,
+    ) -> None:
+        super().__init__()
+        self.setWindowTitle("photo-cleaner")
+        self.resize(1200, 800)
+
+        self._index = index
+        self._root = root
+        self._scanner: Iterator[Path] = iter_unprocessed(root)
+        self._total = sum(1 for _ in iter_unprocessed(root))
+        self._processed_count = 0
+        self._current: PhotoBundle | None = None
+        self._ready_queue: "deque[PhotoBundle]" = deque()
+        self._pixmap_cache: dict[Path, QPixmap] = {}
+
+        # Widgets
+        self._main_thumb = QLabel()
+        self._main_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._main_thumb.setMinimumSize(700, 500)
+        self._filename_label = QLabel("")
+        self._date_panel = DatePanel()
+        self._similar_grid = SimilarGrid()
+        self._dup_strip = DuplicateStrip()
+        self._toast = Toast(self)
+
+        # Layout
+        left = QVBoxLayout()
+        left.addWidget(self._main_thumb, 1)
+        left.addWidget(self._filename_label)
+        right = QVBoxLayout()
+        right.addWidget(self._date_panel)
+        right.addWidget(self._similar_grid, 1)
+        top = QHBoxLayout()
+        top.addLayout(left, 2)
+        top.addLayout(right, 1)
+        root_layout = QVBoxLayout()
+        root_layout.addLayout(top, 1)
+        root_layout.addWidget(self._dup_strip)
+        host = QWidget()
+        host.setLayout(root_layout)
+        self.setCentralWidget(host)
+        self.setStatusBar(QStatusBar())
+
+        # Worker
+        self._worker = Worker(embedder=embedder, index=index)
+        self._worker.photo_ready.connect(self._on_photo_ready)
+        self._worker.error.connect(self._on_worker_error)
+        self._worker.start()
+
+        # Signals
+        self._date_panel.keep_clicked.connect(self._on_keep)
+        self._date_panel.change_clicked.connect(self._on_change)
+        self._dup_strip.keep_both_clicked.connect(self._on_keep)  # same as Keep
+        self._dup_strip.delete_clicked.connect(self._on_delete_duplicate)
+        self._similar_grid.threshold_changed.connect(self._on_threshold_changed)
+
+        # Prime the pump: enqueue first two photos.
+        self._enqueue_next()
+        self._enqueue_next()
+
+    # ----- pipeline -----
+
+    def _enqueue_next(self) -> None:
+        try:
+            p = next(self._scanner)
+        except StopIteration:
+            return
+        self._worker.enqueue(p, threshold=self._similar_grid.threshold)
+
+    def _on_photo_ready(self, bundle: PhotoBundle) -> None:
+        if self._current is None:
+            self._present(bundle)
+        else:
+            self._ready_queue.append(bundle)
+
+    def _on_worker_error(self, path: Path, msg: str) -> None:
+        self._toast.show_message(f"Could not process {path.name}: {msg}")
+        self._enqueue_next()
+
+    def _present(self, bundle: PhotoBundle) -> None:
+        self._current = bundle
+        # Main thumb
+        self._main_thumb.setPixmap(
+            bundle.thumbnail_main.scaled(
+                self._main_thumb.width(),
+                self._main_thumb.height(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        rel = bundle.path.relative_to(self._root) if bundle.path.is_relative_to(self._root) else bundle.path
+        self._filename_label.setText(str(rel))
+
+        # Date panel: pre-fill with last_edited_date if present, else detected
+        last = self._index.get_setting("last_edited_date")
+        default = (
+            datetime.fromisoformat(last)
+            if last
+            else bundle.date_info.earliest
+        )
+        self._date_panel.set_state(
+            detected=bundle.date_info.earliest,
+            source=bundle.date_info.earliest_source,
+            default_for_editor=default,
+        )
+
+        # Similar grid
+        self._refresh_similar(bundle, threshold=self._similar_grid.threshold)
+
+        # Duplicate strip
+        if bundle.duplicate is not None:
+            match_pix = self._get_thumb_for_indexed(bundle.duplicate.path)
+            self._dup_strip.show_pair(
+                similarity=bundle.duplicate.similarity,
+                new_pix=bundle.thumbnail_main,
+                match_pix=match_pix,
+                match_name=bundle.duplicate.path.name,
+            )
+        else:
+            self._dup_strip.hide_strip()
+
+        self.statusBar().showMessage(
+            f"{bundle.path.parent.name} · photo {self._processed_count + 1}/{self._total}"
+        )
+
+    def _refresh_similar(self, bundle: PhotoBundle, threshold: float) -> None:
+        matrix, _shas, paths = self._index.snapshot()
+        matches = find_similar(
+            bundle.embedding, matrix, paths, threshold=threshold, k=SIM_TOP_K
+        )
+        pixmaps = {m.path: self._get_thumb_for_indexed(m.path) for m in matches}
+        self._similar_grid.set_matches(matches, pixmaps)
+
+    def _get_thumb_for_indexed(self, path: Path) -> QPixmap:
+        if path in self._pixmap_cache:
+            return self._pixmap_cache[path]
+        try:
+            with Image.open(path) as im:
+                pix = to_qpixmap(im.convert("RGB"), THUMB_GRID)
+        except Exception:
+            pix = QPixmap()
+        self._pixmap_cache[path] = pix
+        return pix
+
+    # ----- button handlers -----
+
+    def _on_keep(self) -> None:
+        cur = self._current
+        if cur is None:
+            return
+        edited = cur.date_info.earliest
+        self._finalize(cur, edited=edited, action="keep", wrote_disk=False)
+
+    def _on_change(self, dt: datetime) -> None:
+        cur = self._current
+        if cur is None:
+            return
+        result = write_date(cur.path, dt)
+        if result.warning:
+            self._toast.show_message(result.warning)
+        self._finalize(cur, edited=dt, action="change", wrote_disk=True)
+
+    def _on_delete_duplicate(self) -> None:
+        cur = self._current
+        if cur is None or cur.duplicate is None:
+            return
+        try:
+            send2trash.send2trash(str(cur.path))
+        except Exception as exc:
+            self._toast.show_message(f"Trash failed: {exc}")
+            return
+        self._advance()
+
+    def _on_threshold_changed(self, thr: float) -> None:
+        cur = self._current
+        if cur is not None:
+            self._refresh_similar(cur, threshold=thr)
+
+    # ----- finalize -----
+
+    def _finalize(
+        self, cur: PhotoBundle, edited: datetime, action: str, wrote_disk: bool
+    ) -> None:
+        intended = cur.path.parent / f"{DONE_PREFIX}{cur.path.name}"
+        # 1) insert DB row (path stored is the intended post-rename path)
+        rec = PhotoRecord(
+            path=intended,
+            original_name=cur.path.name,
+            sha256=cur.sha256,
+            embedding=cur.embedding.astype(np.float32),
+            detected_date=cur.date_info.earliest.isoformat(),
+            edited_date=edited.isoformat(),
+            date_action=action,
+            processed_at=datetime.now().isoformat(timespec="seconds"),
+        )
+        try:
+            self._index.insert(rec)
+        except Exception as exc:
+            self._toast.show_message(f"DB insert failed: {exc}")
+            return
+        # 2) rename file
+        try:
+            cur.path.rename(intended)
+        except Exception as exc:
+            self._toast.show_message(
+                f"Rename failed (DB row kept, recovery will fix): {exc}"
+            )
+        # 3) update last_edited_date
+        self._index.set_setting("last_edited_date", edited.isoformat())
+        self._advance()
+
+    def _advance(self) -> None:
+        self._processed_count += 1
+        self._current = None
+        # Show next from queue if ready; else wait for worker signal.
+        if self._ready_queue:
+            self._present(self._ready_queue.popleft())
+        # Pre-fetch the photo after that.
+        self._enqueue_next()
+
+    # ----- lifecycle -----
+
+    def closeEvent(self, event) -> None:
+        self._worker.stop()
+        self._worker.wait(5000)
+        self._index.close()
+        super().closeEvent(event)
