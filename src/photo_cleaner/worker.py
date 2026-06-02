@@ -7,7 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from queue import Empty, Queue
 
-from PIL import Image
+from PIL import Image, ImageOps
 from PyQt6.QtCore import QThread, pyqtSignal
 
 import pillow_heif
@@ -70,6 +70,7 @@ class Worker(QThread):
         sha = _sha256_of_file(path)
         with Image.open(path) as im:
             im.load()
+            im = ImageOps.exif_transpose(im)
             embedding = self._embedder.embed(im.convert("RGB"))
             buf = BytesIO()
             to_pil_thumbnail(im.convert("RGB"), THUMB_MAIN).save(buf, format="PNG")

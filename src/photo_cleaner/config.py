@@ -5,7 +5,7 @@ from pathlib import Path
 
 PICTURES_ROOT = Path.home() / "Google Drive" / "My Drive" / "Pictures"
 APP_DATA = Path.home() / ".photo-cleaner"
-DB_PATH = APP_DATA / "index.db"
+DB_PATH = PICTURES_ROOT / "index.db"
 ERROR_LOG = APP_DATA / "errors.log"
 
 DONE_PREFIX = "_done_"
@@ -27,5 +27,6 @@ CLIP_MODEL_PRETRAINED = "openai"
 
 
 def ensure_app_data() -> None:
-    """Create APP_DATA if missing. Called once at startup."""
+    """Create APP_DATA and PICTURES_ROOT if missing. Called once at startup."""
     APP_DATA.mkdir(parents=True, exist_ok=True)
+    PICTURES_ROOT.mkdir(parents=True, exist_ok=True)

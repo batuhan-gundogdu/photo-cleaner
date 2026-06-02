@@ -8,13 +8,14 @@ from typing import Iterator
 
 import numpy as np
 import send2trash
-from PIL import Image
+from PIL import Image, ImageOps
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QPushButton,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -34,7 +35,6 @@ from photo_cleaner.index import Index, PhotoRecord
 from photo_cleaner.scanner import iter_unprocessed
 from photo_cleaner.thumbnailer import to_qpixmap
 from photo_cleaner.ui.date_panel import DatePanel
-from photo_cleaner.ui.duplicate_strip import DuplicateStrip
 from photo_cleaner.ui.similar_grid import SimilarGrid
 from photo_cleaner.ui.toast import Toast
 from photo_cleaner.worker import PhotoBundle, Worker
@@ -65,14 +65,17 @@ class MainWindow(QMainWindow):
         self._main_thumb = QLabel()
         self._main_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._main_thumb.setMinimumSize(700, 500)
+        self._progress_label = QLabel("")
         self._filename_label = QLabel("")
         self._date_panel = DatePanel()
         self._similar_grid = SimilarGrid()
-        self._dup_strip = DuplicateStrip()
         self._toast = Toast(self)
+        self._save_exit_btn = QPushButton("Save && Exit")
+        self._save_exit_btn.setFixedWidth(120)
 
         # Layout
         left = QVBoxLayout()
+        left.addWidget(self._progress_label)
         left.addWidget(self._main_thumb, 1)
         left.addWidget(self._filename_label)
         right = QVBoxLayout()
@@ -81,9 +84,12 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         top.addLayout(left, 2)
         top.addLayout(right, 1)
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        footer.addWidget(self._save_exit_btn)
         root_layout = QVBoxLayout()
         root_layout.addLayout(top, 1)
-        root_layout.addWidget(self._dup_strip)
+        root_layout.addLayout(footer)
         host = QWidget()
         host.setLayout(root_layout)
         self.setCentralWidget(host)
@@ -98,9 +104,13 @@ class MainWindow(QMainWindow):
         # Signals
         self._date_panel.keep_clicked.connect(self._on_keep)
         self._date_panel.change_clicked.connect(self._on_change)
-        self._dup_strip.keep_both_clicked.connect(self._on_keep)  # same as Keep
-        self._dup_strip.delete_clicked.connect(self._on_delete_duplicate)
+        self._date_panel.skip_clicked.connect(self._advance)
+        self._date_panel.delete_clicked.connect(self._on_delete_current_photo)
         self._similar_grid.threshold_changed.connect(self._on_threshold_changed)
+        self._similar_grid.delete_similar_clicked.connect(self._on_delete_similar)
+        self._similar_grid.delete_current_for_similar.connect(self._on_delete_current_photo)
+        self._similar_grid.copy_date_clicked.connect(self._date_panel.set_date)
+        self._save_exit_btn.clicked.connect(self.close)
 
         # Prime the pump: enqueue first two photos.
         self._enqueue_next()
@@ -158,21 +168,10 @@ class MainWindow(QMainWindow):
         self._current_snapshot = self._index.snapshot()
         self._refresh_similar(bundle, threshold=self._similar_grid.threshold)
 
-        # Duplicate strip
-        if bundle.duplicate is not None:
-            match_pix = self._get_thumb_for_indexed(bundle.duplicate.path)
-            self._dup_strip.show_pair(
-                similarity=bundle.duplicate.similarity,
-                new_pix=pix,
-                match_pix=match_pix,
-                match_name=bundle.duplicate.path.name,
-            )
-        else:
-            self._dup_strip.hide_strip()
-
-        self.statusBar().showMessage(
-            f"{bundle.path.parent.name} · photo {self._processed_count + 1}/{self._total}"
-        )
+        folder = bundle.path.parent.name
+        n = self._processed_count + 1
+        self._progress_label.setText(f"{folder}  ·  {n}/{self._total}")
+        self.statusBar().showMessage(f"{folder}  ·  {n}/{self._total}")
 
     def _refresh_similar(self, bundle: PhotoBundle, threshold: float) -> None:
         if self._current_snapshot is None:
@@ -182,14 +181,18 @@ class MainWindow(QMainWindow):
             bundle.embedding, matrix, paths, threshold=threshold, k=SIM_TOP_K
         )
         pixmaps = {m.path: self._get_thumb_for_indexed(m.path) for m in matches}
-        self._similar_grid.set_matches(matches, pixmaps)
+        dates: dict[Path, datetime | None] = {}
+        for m in matches:
+            rec = self._index.find_by_path(m.path)
+            dates[m.path] = datetime.fromisoformat(rec.edited_date) if rec else None
+        self._similar_grid.set_matches(matches, pixmaps, dates)
 
     def _get_thumb_for_indexed(self, path: Path) -> QPixmap:
         if path in self._pixmap_cache:
             return self._pixmap_cache[path]
         try:
             with Image.open(path) as im:
-                pix = to_qpixmap(im.convert("RGB"), THUMB_GRID)
+                pix = to_qpixmap(ImageOps.exif_transpose(im).convert("RGB"), THUMB_GRID)
         except Exception:
             pix = QPixmap()
         self._pixmap_cache[path] = pix
@@ -213,9 +216,14 @@ class MainWindow(QMainWindow):
             self._toast.show_message(result.warning)
         self._finalize(cur, edited=dt, action="change", wrote_disk=True)
 
-    def _on_delete_duplicate(self) -> None:
+    def _on_threshold_changed(self, thr: float) -> None:
         cur = self._current
-        if cur is None or cur.duplicate is None:
+        if cur is not None:
+            self._refresh_similar(cur, threshold=thr)
+
+    def _on_delete_current_photo(self) -> None:
+        cur = self._current
+        if cur is None:
             return
         try:
             send2trash.send2trash(str(cur.path))
@@ -224,10 +232,20 @@ class MainWindow(QMainWindow):
             return
         self._advance()
 
-    def _on_threshold_changed(self, thr: float) -> None:
+    def _on_delete_similar(self, path: Path) -> None:
+        try:
+            send2trash.send2trash(str(path))
+        except Exception as exc:
+            self._toast.show_message(f"Trash failed: {exc}")
+            return
+        try:
+            self._index.delete_by_path(path)
+        except Exception as exc:
+            self._toast.show_message(f"DB delete failed: {exc}")
         cur = self._current
         if cur is not None:
-            self._refresh_similar(cur, threshold=thr)
+            self._current_snapshot = self._index.snapshot()
+            self._refresh_similar(cur, threshold=self._similar_grid.threshold)
 
     # ----- finalize -----
 

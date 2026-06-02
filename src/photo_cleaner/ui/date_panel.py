@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
 class DatePanel(QWidget):
     keep_clicked = pyqtSignal()
     change_clicked = pyqtSignal(datetime)  # the chosen date as midnight datetime
+    skip_clicked = pyqtSignal()
+    delete_clicked = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -30,8 +32,13 @@ class DatePanel(QWidget):
         self._date_edit.setDate(QDate.currentDate())
         self._keep_btn = QPushButton("Keep")
         self._change_btn = QPushButton("Change")
+        self._skip_btn = QPushButton("Skip")
+        self._delete_btn = QPushButton("Delete")
+        self._delete_btn.setStyleSheet("color: #b00;")
         self._keep_btn.clicked.connect(self.keep_clicked.emit)
         self._change_btn.clicked.connect(self._on_change)
+        self._skip_btn.clicked.connect(self.skip_clicked.emit)
+        self._delete_btn.clicked.connect(self.delete_clicked.emit)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._detected_label)
@@ -43,6 +50,8 @@ class DatePanel(QWidget):
         btn_row = QHBoxLayout()
         btn_row.addWidget(self._keep_btn)
         btn_row.addWidget(self._change_btn)
+        btn_row.addWidget(self._skip_btn)
+        btn_row.addWidget(self._delete_btn)
         layout.addLayout(btn_row)
         layout.addStretch(1)
 
@@ -57,6 +66,9 @@ class DatePanel(QWidget):
         self._source_label.setText(f"source: {source}")
         d = default_for_editor
         self._date_edit.setDate(QDate(d.year, d.month, d.day))
+
+    def set_date(self, dt: datetime) -> None:
+        self._date_edit.setDate(QDate(dt.year, dt.month, dt.day))
 
     def _on_change(self) -> None:
         d: QDate = self._date_edit.date()

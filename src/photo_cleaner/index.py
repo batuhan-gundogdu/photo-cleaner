@@ -93,6 +93,25 @@ class Index:
             )
         )
 
+    def find_by_path(self, path: Path) -> PhotoRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT path, original_name, sha256, embedding, detected_date,
+                          edited_date, date_action, processed_at
+                   FROM photos WHERE path = ? LIMIT 1""",
+                (str(path),),
+            ).fetchone()
+        if row is None:
+            return None
+        return _row_to_record(row)
+
+    def delete_by_path(self, path: Path) -> None:
+        self._with_retry(
+            lambda: self._conn.execute(
+                "DELETE FROM photos WHERE path = ?", (str(path),)
+            )
+        )
+
     def find_by_sha256(self, sha: str) -> PhotoRecord | None:
         with self._lock:
             row = self._conn.execute(

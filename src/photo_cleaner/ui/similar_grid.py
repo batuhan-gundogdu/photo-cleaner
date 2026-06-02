@@ -1,6 +1,7 @@
 """Right-pane bottom: threshold slider + scrollable grid of similar thumbs."""
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -8,6 +9,7 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QGridLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QSlider,
     QVBoxLayout,
@@ -25,6 +27,9 @@ from photo_cleaner.duplicate_finder import Match
 
 class SimilarGrid(QWidget):
     threshold_changed = pyqtSignal(float)
+    delete_similar_clicked = pyqtSignal(Path)
+    delete_current_for_similar = pyqtSignal()
+    copy_date_clicked = pyqtSignal(datetime)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -53,7 +58,12 @@ class SimilarGrid(QWidget):
     def threshold(self) -> float:
         return self._slider.value() / 100.0
 
-    def set_matches(self, matches: list[Match], pixmaps: dict[Path, QPixmap]) -> None:
+    def set_matches(
+        self,
+        matches: list[Match],
+        pixmaps: dict[Path, QPixmap],
+        dates: dict[Path, datetime | None] | None = None,
+    ) -> None:
         # Clear existing grid
         while self._grid.count():
             item = self._grid.takeAt(0)
@@ -72,7 +82,30 @@ class SimilarGrid(QWidget):
                 lbl.setText(m.path.name)
             lbl.setFixedSize(THUMB_GRID, THUMB_GRID)
             lbl.setToolTip(f"{m.path.name}\ncos={m.similarity:.4f}")
-            self._grid.addWidget(lbl, i // cols, i % cols)
+            dt = (dates or {}).get(m.path)
+            date_btn = QPushButton(dt.strftime("%Y-%m-%d") if dt else "—")
+            date_btn.setFixedWidth(THUMB_GRID)
+            date_btn.setToolTip("Click to use this date")
+            date_btn.setEnabled(dt is not None)
+            if dt is not None:
+                date_btn.clicked.connect(lambda checked, d=dt: self.copy_date_clicked.emit(d))
+            del_old_btn = QPushButton("Delete old")
+            del_old_btn.setFixedWidth(THUMB_GRID)
+            del_old_btn.setStyleSheet("color: #b00;")
+            del_old_btn.clicked.connect(lambda checked, p=m.path: self.delete_similar_clicked.emit(p))
+            del_cur_btn = QPushButton("Delete current")
+            del_cur_btn.setFixedWidth(THUMB_GRID)
+            del_cur_btn.setStyleSheet("color: #b00;")
+            del_cur_btn.clicked.connect(self.delete_current_for_similar.emit)
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(2)
+            cell_layout.addWidget(lbl)
+            cell_layout.addWidget(date_btn)
+            cell_layout.addWidget(del_old_btn)
+            cell_layout.addWidget(del_cur_btn)
+            self._grid.addWidget(cell, i // cols, i % cols)
         self._count_label.setText(f"({len(matches)} matches ≥ {self.threshold:.2f})")
 
     def _on_slider(self, value: int) -> None:
