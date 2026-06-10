@@ -25,12 +25,16 @@ def test_write_updates_jpeg_exif_and_mtime(tmp_path, make_jpeg):
     assert abs(p.stat().st_mtime - new_dt.timestamp()) < 1.0
 
 
-def test_write_png_falls_back_to_mtime_only(tmp_path):
+def test_write_png_writes_exif_and_mtime(tmp_path):
     p = tmp_path / "y.png"
     Image.new("RGB", (8, 8)).save(p, format="PNG")
     new_dt = datetime(2015, 3, 10)
     result = write(p, new_dt)
-    assert result.exif_written is False
+    assert result.exif_written is True
     assert result.mtime_written is True
-    assert result.warning is not None
+    assert result.warning is None
+    img = Image.open(p)
+    exif = piexif.load(img.info["exif"])
+    raw = exif["Exif"][piexif.ExifIFD.DateTimeOriginal].decode("ascii")
+    assert raw == "2015:03:10 00:00:00"
     assert abs(p.stat().st_mtime - new_dt.timestamp()) < 1.0

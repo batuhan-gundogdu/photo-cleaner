@@ -205,7 +205,10 @@ class MainWindow(QMainWindow):
         if cur is None:
             return
         edited = cur.date_info.earliest
-        self._finalize(cur, edited=edited, action="keep", wrote_disk=False)
+        result = write_date(cur.path, edited)
+        if result.warning:
+            self._toast.show_message(result.warning)
+        self._finalize(cur, edited=edited, action="keep", wrote_disk=result.exif_written)
 
     def _on_change(self, dt: datetime) -> None:
         cur = self._current
